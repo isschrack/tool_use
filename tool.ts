@@ -1,70 +1,124 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { ChatOpenAI } from "@langchain/openai";
-import { HumanMessage } from "@langchain/core/messages";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import 'dotenv/config';
 
-const multiply = tool(
-  ({ a, b }: { a: number; b: number }): number => {
+const lookupPhoneNumber = tool(
+  async ({ phoneNumber }: { phoneNumber: string }): Promise<string> => {
     /**
-     * Multiply two numbers.
+     * Look up phone number information using NUMVERIFY API.
      */
-    console.log(`🔧 TOOL CALLED: multiply(${a}, ${b})`);
-    const result = a * b;
-    console.log(`🔧 TOOL RESULT: ${result}`);
-    return result;
+    console.log(`TOOL CALLED: lookupPhoneNumber(${phoneNumber})`);
+    
+    try {
+      const apiKey = process.env.NUMVERIFY_API_KEY;
+      if (!apiKey) {
+        return "Error: NUMVERIFY_API_KEY environment variable is not set";
+      }
+
+      const url = `http://apilayer.net/api/validate?access_key=${apiKey}&number=${encodeURIComponent(phoneNumber)}`;
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      if (data.error) {
+        return `API Error: ${data.error.info || 'Unknown error'}`;
+      }
+
+      const result = {
+        valid: data.valid,
+        number: data.number,
+        localFormat: data.local_format,
+        internationalFormat: data.international_format,
+        countryPrefix: data.country_prefix,
+        countryCode: data.country_code,
+        countryName: data.country_name,
+        location: data.location,
+        carrier: data.carrier,
+        lineType: data.line_type
+      };
+
+      console.log('TOOL RESULT:', result);
+      return JSON.stringify(result, null, 2);
+    } catch (error) {
+      const errorMessage = `Error looking up phone number: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      console.log('TOOL ERROR:', errorMessage);
+      return errorMessage;
+    }
   },
   {
-    name: "multiply",
-    description: "Multiply two numbers",
+    name: "lookupPhoneNumber",
+    description: "Look up phone number information including validity, country, carrier, and line type using NUMVERIFY API",
     schema: z.object({
-      a: z.number(),
-      b: z.number(),
+      phoneNumber: z.string().describe("The phone number to look up (can include country code)"),
     }),
   }
 );
 
-// Test the tool directly first
-console.log("=== Testing Tool Directly ===");
-const directResult = await multiply.invoke({ a: 2, b: 3 });
-console.log("Direct tool result:", directResult);
+async function main() {
+  // Test the phone number lookup tool directly first
+  console.log("=== Testing Phone Number Tool Directly ===");
+  const directResult = await lookupPhoneNumber.invoke({ phoneNumber: "+1-555-123-4567" });
+  console.log("Direct tool result:", directResult);
 
-console.log(multiply.name); // multiply
-console.log(multiply.description); // Multiply two numbers.
+  // Create LLM with tools using Google Gemini
+  const llm = new ChatGoogleGenerativeAI({
+    model: "gemini-2.0-flash",
+    temperature: 0,
+  });
 
-// Create LLM with tools
-const llm = new ChatOpenAI({
-  model: "gpt-3.5-turbo",
-  temperature: 0,
-  // Make sure to set your OpenAI API key in environment variables
-  // or pass it directly: openAIApiKey: "your-api-key"
-});
+  const llmWithTools = llm.bindTools([lookupPhoneNumber]);
 
-// Bind the tools to the LLM
-const llmWithTools = llm.bindTools([multiply]);
+  // Example 1: Simple phone number validation
+  console.log("\n=== Example 1: Basic Phone Number Validation ===");
+  const response1 = await llmWithTools.invoke([
+    { role: "user", content: "Is +1-555-123-4567 a valid phone number?" }
+  ]);
 
-// Example 1: Simple tool usage
-console.log("\n=== Example 1: Basic Tool Usage ===");
-const response1 = await llmWithTools.invoke([
-  new HumanMessage("What is 15 multiplied by 23?")
-]);
+  console.log("AI Response:", response1.content);
+  
+  // Execute tool calls if any
+  if (response1.tool_calls && response1.tool_calls.length > 0) {
+    for (const toolCall of response1.tool_calls) {
+      console.log(`Tool Call: ${toolCall.name}(${JSON.stringify(toolCall.args)})`);
+      const toolResult = await lookupPhoneNumber.invoke(toolCall.args as { phoneNumber: string });
+      console.log("Tool Result:", toolResult);
+    }
+  }
 
-console.log("AI Response:", response1.content);
-console.log("Tool calls:", response1.tool_calls);
+  // Example 2: Phone number information lookup
+  console.log("\n=== Example 2: Phone Number Information ===");
+  const response2 = await llmWithTools.invoke([
+    { role: "user", content: "Can you tell me about the phone number +44 20 7946 0958?" }
+  ]);
 
-// Example 2: More complex calculation
-console.log("\n=== Example 2: Complex Calculation ===");
-const response2 = await llmWithTools.invoke([
-  new HumanMessage("I need to calculate 42 times 17 for my math homework. Can you help?")
-]);
+  console.log("AI Response:", response2.content);
+  
+  // Execute tool calls if any
+  if (response2.tool_calls && response2.tool_calls.length > 0) {
+    for (const toolCall of response2.tool_calls) {
+      console.log(`Tool Call: ${toolCall.name}(${JSON.stringify(toolCall.args)})`);
+      const toolResult = await lookupPhoneNumber.invoke(toolCall.args as { phoneNumber: string });
+      console.log("Tool Result:", toolResult);
+    }
+  }
 
-console.log("AI Response:", response2.content);
-console.log("Tool calls:", response2.tool_calls);
+  // Example 3: Multiple phone number validation
+  console.log("\n=== Example 3: Multiple Phone Numbers ===");
+  const response3 = await llmWithTools.invoke([
+    { role: "user", content: "I have these phone numbers: +1-800-555-1234 and +33 1 42 68 53 00. Can you validate them and tell me which countries they're from?" }
+  ]);
 
-// Example 3: Word problem that requires multiplication
-console.log("\n=== Example 3: Word Problem ===");
-const response3 = await llmWithTools.invoke([
-  new HumanMessage("If I have 8 boxes and each box contains 12 items, how many items do I have in total?")
-]);
+  console.log("AI Response:", response3.content);
+  
+  // Execute tool calls if any
+  if (response3.tool_calls && response3.tool_calls.length > 0) {
+    for (const toolCall of response3.tool_calls) {
+      console.log(`Tool Call: ${toolCall.name}(${JSON.stringify(toolCall.args)})`);
+      const toolResult = await lookupPhoneNumber.invoke(toolCall.args as { phoneNumber: string });
+      console.log("Tool Result:", toolResult);
+    }
+  }
+}
 
-console.log("AI Response:", response3.content);
-console.log("Tool calls:", response3.tool_calls);
+// Run the main function
+main().catch(console.error);
